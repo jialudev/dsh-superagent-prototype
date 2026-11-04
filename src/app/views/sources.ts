@@ -52,7 +52,8 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
     const problem = problemOf(instance.id, setup)
     return { ...named, installed: instance.installed, enabled: instance.enabled, state: sourceState(instance, parts, setup), health: parts,
       ...problem ? { problem } : {}, stats: stats[instance.id] ?? { received: 0, filtered: 0, lastAt: '' }, filtered: filtered(instance.id),
-      dropped: dropped.filter(item => item.channel.source === instance.id) }
+      dropped: dropped.filter(item => item.channel.source === instance.id),
+      drafts: store.read.draftReplies().filter(item => item.channel.source === instance.id).map(item => ({ id: item.id, text: item.text, kind: item.kind, url: item.channel.address.url ?? '' })) }
   })
 }
 export type SourceStatusView = ReturnType<typeof sourcesStatus>[number]

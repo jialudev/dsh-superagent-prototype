@@ -19,6 +19,8 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 }
 
 export const KV = {
+  /** GitLab Source cursors are isolated by host and immutable project ID. */
+  gitlab: { cursor: family<string, [project: string]>('gitlab-cursor:') },
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },
   /** Settings: current revision, per-block revision, and saved settings snapshots (including the current one). */

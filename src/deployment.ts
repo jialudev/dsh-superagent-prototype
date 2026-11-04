@@ -47,12 +47,19 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+export const GitlabAccountsSchema = z.object({
+  host: z.string().regex(/^[A-Za-z0-9.-]+(?::[0-9]+)?$/).default('gitlab.com'),
+  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)?$/).default(''),
+  cli: z.string().trim().default('glab'),
+  replyMode: z.enum(['draft', 'send']).default('draft'),
+})
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
 export interface Deployment extends Machine {
   repository: string
   github: { cli: string; login: string; noreply: string }
+  gitlab?: { cli: string; host: string; project: number; repository: string; login: string; noreply: string; replyMode: 'draft' | 'send' }
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
@@ -103,6 +110,27 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
   return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+}
+
+/** Resolve a self-hosted GitLab project and its existing glab identity without copying credentials. */
+export async function resolveGitlabDeployment(machine: Machine, value: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const config = GitlabAccountsSchema.parse(value ?? {})
+  if (!config.repository) throw new SetupError('gitlabRepositoryUnset')
+  const fail = (error: unknown): never => { throw new SetupError('gitlabAccessFailed', { output: reason(error) }) }
+  let cli: string
+  try { cli = executable(config.cli, path, workerBin(machine.stateDir)) } catch (error) { return fail(error) }
+  const api = (endpoint: string) => probe([cli, 'api', '--hostname', config.host, endpoint]).catch(fail)
+  const user = parsed(z.object({ id: z.number(), username: z.string().min(1), public_email: z.string().nullish() }), await api('user'))
+  const project = parsed(z.object({ id: z.number().int().positive(), path_with_namespace: z.string(), permissions: z.object({
+    project_access: z.object({ access_level: z.number() }).nullish(), group_access: z.object({ access_level: z.number() }).nullish(),
+  }).optional() }), await api(`projects/${encodeURIComponent(config.repository)}`))
+  if (!user || !project) return fail(new Error('glab did not return a GitLab user and project'))
+  // Draft mode needs only read access. Sending and code delivery require Developer or higher.
+  const level = Math.max(project.permissions?.project_access?.access_level ?? 0, project.permissions?.group_access?.access_level ?? 0)
+  if (config.replyMode === 'send' && level < 30) return fail(new Error('Sending requires Developer access to the GitLab project'))
+  const gitlab = { cli, host: config.host, project: project.id, repository: project.path_with_namespace, login: user.username,
+    noreply: user.public_email || `${user.id}-${user.username}@users.noreply.${config.host}`, replyMode: config.replyMode }
+  return { ...machine, repository: project.path_with_namespace, github: { cli: '', login: '', noreply: '' }, gitlab }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

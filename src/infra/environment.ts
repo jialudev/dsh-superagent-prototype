@@ -15,12 +15,41 @@ const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
 const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Written by ${name} on every start; edits are lost.`)
 /** Commands workers need, which `blockedCommands` cannot block: the shims and git. */
-export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli']
+export const WORKER_COMMANDS: readonly string[] = ['gh', 'glab', 'git', 'lark-cli']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
 export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
+const gitlabHelper = (stateDir: string): string => `!python3 ${shellQuote(join(stateDir, 'gitlab-credential.py'))}`
+
+/** CLI shim for preview mode: only GET requests to the configured project are allowed. */
+function draftGlab(cli: string, host: string, project: number, repository: string): string {
+  const script = `import sys,subprocess,urllib.parse
+cli,host,project,repo,*args=sys.argv[1:]
+def refuse():
+ print('GitLab preview mode: only project API reads are allowed; use orchestrator_reply to save a local draft.',file=sys.stderr);sys.exit(1)
+if not args or args.pop(0)!='api':refuse()
+path=None;flags=[]
+while args:
+ arg=args.pop(0)
+ if arg=='--paginate':flags.append(arg)
+ elif arg in ('--method','-X'):
+  if not args or args.pop(0).upper()!='GET':refuse()
+ elif arg=='--output':
+  if not args:refuse()
+  value=args.pop(0)
+  if value not in ('json','ndjson'):refuse()
+  flags.extend([arg,value])
+ elif arg.startswith('-') or path is not None:refuse()
+ else:path=arg
+if path is None:refuse()
+decoded=urllib.parse.unquote(path);parts=urllib.parse.urlsplit(decoded)
+prefixes=('projects/'+project+'/','projects/'+repo+'/')
+if parts.scheme or parts.netloc or not any(parts.path.startswith(p) for p in prefixes) or any(p in ('.','..') for p in parts.path.split('/')):refuse()
+sys.exit(subprocess.call([cli,'api','--hostname',host,path,'--method','GET',*flags]))`
+  return `exec python3 -c ${shellQuote(script)} ${shellQuote(cli)} ${shellQuote(host)} ${shellQuote(String(project))} ${shellQuote(repository)} "$@"`
+}
 
 export function sameDirectory(a: string, b: string): boolean {
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
@@ -44,7 +73,7 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
  */
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
-    GH_TOKEN: undefined, GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined, GITHUB_TOKEN: undefined, GITLAB_TOKEN: undefined, GLAB_TOKEN: undefined, OAUTH_TOKEN: undefined,
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
@@ -76,8 +105,8 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'gitlab' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
+  const { stateDir, github, gitlab, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -97,7 +126,16 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n')
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  await shim('gh', run(github.cli))
+  await shim('gh', github.cli ? run(github.cli) : fail('GitHub is not configured; use the GitLab Source.'))
+  if (gitlab) {
+    await shim('glab', gitlab.replyMode === 'draft' ? `${withoutShims}\n${draftGlab(gitlab.cli, gitlab.host, gitlab.project, gitlab.repository)}`
+      : `${withoutShims}\nGITLAB_HOST=${shellQuote(gitlab.host)}; export GITLAB_HOST\nexec ${shellQuote(gitlab.cli)} "$@"`)
+    if (gitlab.replyMode === 'draft') {
+      // Only explicitly enumerated read/local commands reach git; neither push nor arbitrary -c/alias commands do.
+      await shim('git', `${withoutShims}\ncase "$1" in\n  status|diff|log|show|rev-parse|ls-files|ls-tree|grep|blame|fetch|clone|add|commit|checkout|switch|restore) exec git "$@" ;;\n  config) case \"$*\" in \"config -z --show-scope --get-regexp \"*) exec git \"$@\" ;; *) exit 1 ;; esac ;;\n  *) ${fail('GitLab preview mode: this git command is disabled; no push is allowed.')} ;;\nesac`)
+    }
+    await own(join(stateDir, 'gitlab-credential.py'), `${MARKER}\nimport sys,subprocess\nfields=dict(line.rstrip('\\n').split('=',1) for line in sys.stdin if '=' in line)\nif len(sys.argv)>1 and sys.argv[1]=='get' and fields.get('protocol')=='https' and fields.get('host')==${JSON.stringify(gitlab.host)}:\n result=subprocess.run([${JSON.stringify(gitlab.cli)},'config','get','token','--host',${JSON.stringify(gitlab.host)}],capture_output=True,text=True)\n if result.returncode==0 and result.stdout.strip():\n  print('username=oauth2');print('password='+result.stdout.strip());print()\n`, 0o600)
+  }
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
     await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
@@ -108,8 +146,10 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
     '[credential]', '\thelper =',
-    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
-    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
+    ...github.cli ? ['[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
+      '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/'] : [],
+    ...gitlab ? [`[credential "https://${gitlab.host}"]`, `\thelper = ${gitQuote(gitlabHelper(stateDir))}`,
+      `[url "https://${gitlab.host}/"]`, `\tinsteadOf = git@${gitlab.host}:`, `\tinsteadOf = ssh://git@${gitlab.host}/`] : [],
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')
@@ -135,11 +175,12 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
 }
 
 /** Verifies that worker git invocations resolve the deployment's GitHub credential helper. */
-export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
-  const { github, stateDir } = deployment
+export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'gitlab' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
+  const { github, gitlab, stateDir } = deployment
+  const host = gitlab?.host ?? 'github.com'
   // `-z` separates fields with NUL and never quotes paths.
-  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
+  const helpers = (await runAsWorker(subprocess, ['env', `PATH=${withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))}`, 'git', 'config', '-z', '--show-origin', '--get-all', `credential.https://${host}.helper`], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
+  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, gitlab ? gitlabHelper(stateDir) : credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
 }
 
 /**

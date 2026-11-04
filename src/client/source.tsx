@@ -134,6 +134,13 @@ function SourceRow({ source }: { source: SourceStatusRow }) {
         </div>
       </DisclosureRow>}
       {dropped.length > 0 && <DroppedReplies items={dropped} />}
+      {!!source.drafts?.length && <section className="dt-card">
+        <h3>{t('sourceDraftsTitle')}</h3><Hint>{t('sourceDraftsHint')}</Hint>
+        {source.drafts.map(item => <div key={item.id} className="dt-card">
+          <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.text}</pre>
+          {item.url && <a href={item.url} target="_blank" rel="noreferrer">{t('sourceDraftOrigin')}</a>}
+        </div>)}
+      </section>}
     </div>
   </li>
 }

@@ -107,6 +107,7 @@ export interface PanelServer {
   form?: ConfigForm<Record<string, unknown>> | undefined
   opened: string[]
   dropped: DroppedReply[]
+  drafts?: SourceStatusRow['drafts']
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
 }
 export let server: PanelServer
@@ -154,7 +155,7 @@ function sourceStatuses(): SourceStatusRow[] {
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
       filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
-      dropped: server.dropped.filter(item => item.channel.source === kind.kind && item.dropped.at >= dayAgo()) }
+      dropped: server.dropped.filter(item => item.channel.source === kind.kind && item.dropped.at >= dayAgo()), drafts: server.drafts ?? [] }
   })
 }
 const stateView = (): StateView => ({

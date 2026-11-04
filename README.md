@@ -37,3 +37,7 @@ Read the numbered documents in order; each builds only on the ones before it.
 ## License
 
 [MIT](LICENSE)
+
+## GitLab support in this fork
+
+See [GitLab integration](docs/gitlab.md) for self-hosted GitLab setup and local-only reply previews.

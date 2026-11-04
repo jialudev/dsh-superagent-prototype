@@ -71,7 +71,7 @@ export interface Executor {
 /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
 export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
-export type ReplyStatus = 'pending' | 'sent' | 'dropped'
+export type ReplyStatus = 'pending' | 'sent' | 'draft' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */
 export interface Outbox {
   /** Queue a message idempotently; an id queued before keeps its first message. */

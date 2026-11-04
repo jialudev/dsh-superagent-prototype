@@ -112,4 +112,21 @@ export class Commands {
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }
+  /** Project-scoped GitLab API; draft mode refuses every mutation before starting glab. */
+  async gitlab<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T> {
+    const target = this.deployment.gitlab
+    if (!target) throw new Error('GitLab is not configured')
+    if (/^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(decodeURIComponent(path))) throw new Error('GitLab calls are restricted to the configured project')
+    if (target.replyMode === 'draft') {
+      for (let index = 0; index < flags.length; index++) {
+        const flag = flags[index]
+        if (flag === '--paginate') continue
+        if ((flag === '--method' || flag === '-X') && flags[++index]?.toUpperCase() === 'GET') continue
+        if (flag === '--output' && ['json', 'ndjson'].includes(flags[++index] ?? '')) continue
+        throw new Error('GitLab is in draft mode; remote writes are disabled')
+      }
+    }
+    const output = await this.run(target.cli, ['api', '--hostname', target.host, `projects/${target.project}/${path}`, ...flags])
+    return schema.parse(JSON.parse(output))
+  }
 }

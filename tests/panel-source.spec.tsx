@@ -284,3 +284,17 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
   expect(field('智能体的 GitHub CLI').matches(':disabled')).toBe(false)
   expect(field<HTMLInputElement>('智能体的 GitHub CLI').value).toBe('/opt/bin/gh-agent')
 })
+
+
+it('shows complete local reply drafts as text with no send action', async () => {
+  const proposed = '这是一条拟回复。\n' + '完整分析内容 '.repeat(80) + '<script>doNotRun()</script>'
+  server.drafts = [{ id: 'local-preview', kind: 'reply', text: proposed, url: 'https://gitlab.example/group/project/-/issues/42' }]
+  await mount()
+  await click(zh['tab.source'])
+  expect(text()).toContain(zh.sourceDraftsTitle)
+  expect(text()).toContain(zh.sourceDraftsHint)
+  expect(document.querySelector('pre')?.textContent).toBe(proposed)
+  expect(document.querySelector('pre script')).toBeNull()
+  expect(document.querySelector('a[href="https://gitlab.example/group/project/-/issues/42"]')?.textContent).toBe(zh.sourceDraftOrigin)
+  expect(all('button').some(button => button.textContent === '发送')).toBe(false)
+})
