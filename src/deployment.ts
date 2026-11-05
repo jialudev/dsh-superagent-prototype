@@ -47,6 +47,7 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+export const FeishuUserSchema = z.object({ cli: z.string().trim().default(''), account: z.string().regex(/^(ou_[A-Za-z0-9]+)?$/).default('') })
 export const GitlabAccountsSchema = z.object({
   host: z.string().regex(/^[A-Za-z0-9.-]+(?::[0-9]+)?$/).default('gitlab.com'),
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)?$/).default(''),
@@ -54,15 +55,17 @@ export const GitlabAccountsSchema = z.object({
   replyMode: z.enum(['draft', 'send']).default('draft'),
 })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape), 'feishu-user': Object.keys(FeishuUserSchema.shape) }
 
 export interface Deployment extends Machine {
   repository: string
   github: { cli: string; login: string; noreply: string }
   gitlab?: { cli: string; host: string; project: number; repository: string; login: string; noreply: string; replyMode: 'draft' | 'send' }
   feishu?: FeishuBot
+  feishuUser?: FeishuUser
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+export interface FeishuUser { cli: string; appId: string; brand: 'feishu' | 'lark'; openId: string; name: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -134,6 +137,20 @@ export async function resolveGitlabDeployment(machine: Machine, value: unknown, 
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })
+/** Bind the read-only personal notification source to the operator's explicitly selected user identity. */
+export async function resolveFeishuUser(machine: Machine, value: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<FeishuUser | undefined> {
+  const config = FeishuUserSchema.parse(value ?? {})
+  if (!config.cli) return undefined
+  try {
+    const cli = executable(config.cli, path, workerBin(machine.stateDir))
+    const text = await probe(['env', 'LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1', cli, 'whoami', '--as', 'user'])
+    const identity = parsed(z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']),
+      identity: z.literal('user'), available: z.literal(true), onBehalfOf: z.object({ openId: z.string().regex(/^ou_[A-Za-z0-9]+$/), userName: z.string().optional() }),
+    }), text)
+    if (!identity || !config.account || identity.onBehalfOf.openId !== config.account) throw new Error('The selected personal Feishu account does not match the CLI user identity')
+    return { cli, appId: identity.appId, brand: identity.brand, openId: identity.onBehalfOf.openId, name: identity.onBehalfOf.userName ?? '' }
+  } catch (error) { throw new SetupError('feishuUserFailed', { output: reason(error) }) }
+}
 const BotInfo = z.object({ bot: z.object({ open_id: z.string().regex(/^ou_[A-Za-z0-9]+$/), app_name: z.string().default('') }) })
 /**
  * Verify that the configured Feishu CLI is authenticated as a bot and restricted to strict mode `bot`.

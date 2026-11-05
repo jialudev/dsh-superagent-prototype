@@ -40,6 +40,18 @@ function ended(error: unknown): string {
   return typeof code === 'string' ? `could not run: ${code}` : 'failed'
 }
 export interface Tally { skipped: number }
+export const LARK_USER_READ_COMMANDS = ['+chat-list', '+chat-search', '+chat-messages-list', '+messages-search', '+messages-mget', '+threads-messages-list', '+chat-members-list'] as const
+export const LARK_USER_VALUE_FLAGS = ['--query', '--chat-id', '--chat-type', '--sender', '--sender-type', '--exclude-sender-type', '--start', '--end', '--at-chatter-ids', '--page-size', '--page-token', '--page-limit', '--order', '--sort', '--types', '--thread', '--message-ids', '--member-types', '--user-id'] as const
+export const LARK_USER_BOOL_FLAGS = ['--is-at-me', '--no-reactions', '--page-all', '--exclude-muted'] as const
+/** Restrict personal-account calls to read shortcuts, with identity and output format supplied by the host. */
+export function assertLarkUserRead(args: readonly string[]): void {
+  const fail = (): never => { throw new Error('Personal Feishu notifications permit read-only IM shortcuts only') }
+  if (args[0] !== 'im' || !(LARK_USER_READ_COMMANDS as readonly string[]).includes(args[1] ?? '')) fail()
+  for (let index = 2; index < args.length; index++) {
+    if ((LARK_USER_BOOL_FLAGS as readonly string[]).includes(args[index]!)) continue
+    if (!(LARK_USER_VALUE_FLAGS as readonly string[]).includes(args[index]!) || !args[++index] || args[index]!.startsWith('-')) fail()
+  }
+}
 /** Parses array elements against a schema, skipping invalid items and incrementing `tally.skipped`. */
 export function validItems<T>(item: z.ZodType<T>, list: readonly unknown[], tally?: Tally): T[] {
   const items = list.flatMap(value => { const parsed = item.safeParse(value); return parsed.success ? [parsed.data] : [] })
@@ -109,6 +121,20 @@ export class Commands {
     const code = result.error?.code
     if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
     return result.data
+  }
+  /** Reads as the selected personal user; never falls back to the bot or accepts a write command. */
+  async larkUser<T>(args: string[]): Promise<T> {
+    assertLarkUserRead(args)
+    const user = this.deployment.feishuUser
+    if (!user) throw new Error('The personal Feishu notification Source has no verified user CLI')
+    const identity = z.object({ appId: z.string(), identity: z.literal('user'), available: z.literal(true), onBehalfOf: z.object({ openId: z.string() }) })
+      .parse(JSON.parse(await this.run(user.cli, ['whoami', '--as', 'user'])))
+    if (identity.appId !== user.appId || identity.onBehalfOf.openId !== user.openId) throw new Error('The personal Feishu CLI account changed; verify the Source account again')
+    const output = await this.run(user.cli, [...args, '--as', 'user', '--format', 'json'])
+    const envelope = z.object({ ok: z.boolean(), identity: z.string().optional(), data: z.unknown().optional(),
+      error: z.object({ message: z.string().optional(), code: z.number().optional() }).optional() }).parse(JSON.parse(output))
+    if (!envelope.ok || envelope.identity !== 'user') throw new CliError(envelope.error?.message ?? 'The personal Feishu CLI did not return user data', envelope.error?.code)
+    return envelope.data as T
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }

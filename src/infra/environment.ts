@@ -9,13 +9,13 @@ import { delimiter, join, resolve } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
-import { CliError } from './commands.ts'
+import { CliError, LARK_USER_READ_COMMANDS, LARK_USER_VALUE_FLAGS, LARK_USER_BOOL_FLAGS } from './commands.ts'
 
 const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
 const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Written by ${name} on every start; edits are lost.`)
 /** Commands workers need, which `blockedCommands` cannot block: the shims and git. */
-export const WORKER_COMMANDS: readonly string[] = ['gh', 'glab', 'git', 'lark-cli']
+export const WORKER_COMMANDS: readonly string[] = ['gh', 'glab', 'git', 'lark-cli', 'lark-user-cli']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
@@ -49,6 +49,27 @@ prefixes=('projects/'+project+'/','projects/'+repo+'/')
 if parts.scheme or parts.netloc or not any(parts.path.startswith(p) for p in prefixes) or any(p in ('.','..') for p in parts.path.split('/')):refuse()
 sys.exit(subprocess.call([cli,'api','--hostname',host,path,'--method','GET',*flags]))`
   return `exec python3 -c ${shellQuote(script)} ${shellQuote(cli)} ${shellQuote(host)} ${shellQuote(String(project))} ${shellQuote(repository)} "$@"`
+}
+/** A separate user-account wrapper; the existing bot CLI keeps its bot-only contract. */
+function personalLark(cli: string, appId: string, account: string): string {
+  const script = `import json,sys,subprocess,os
+cli,app,account,*args=sys.argv[1:]
+def refuse():
+ print('Personal Feishu notifications allow read-only IM commands as the selected user; sending is disabled.',file=sys.stderr);sys.exit(1)
+if len(args)<2 or args[0]!='im' or args[1] not in ${JSON.stringify(LARK_USER_READ_COMMANDS)}:refuse()
+i=2
+while i<len(args):
+ if args[i] in ${JSON.stringify(LARK_USER_BOOL_FLAGS)}:i+=1;continue
+ if args[i] not in ${JSON.stringify(LARK_USER_VALUE_FLAGS)} or i+1>=len(args) or args[i+1].startswith('-'):refuse()
+ i+=2
+env=dict(os.environ,LARKSUITE_CLI_NO_UPDATE_NOTIFIER='1',LARKSUITE_CLI_NO_SKILLS_NOTIFIER='1')
+check=subprocess.run([cli,'whoami','--as','user'],capture_output=True,text=True,env=env)
+if check.returncode:refuse()
+try:identity=json.loads(check.stdout)
+except ValueError:refuse()
+if identity.get('identity')!='user' or not identity.get('available') or identity.get('appId')!=app or identity.get('onBehalfOf',{}).get('openId')!=account:refuse()
+sys.exit(subprocess.call([cli,*args,'--as','user','--format','json'],env=env))`
+  return `exec python3 -c ${shellQuote(script)} ${shellQuote(cli)} ${shellQuote(appId)} ${shellQuote(account)} "$@"`
 }
 
 export function sameDirectory(a: string, b: string): boolean {
@@ -105,8 +126,8 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'gitlab' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, github, gitlab, feishu } = deployment
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'gitlab' | 'feishu' | 'feishuUser'>, blockedCommands: readonly string[]): Promise<void> {
+  const { stateDir, github, gitlab, feishu, feishuUser } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -137,6 +158,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     await own(join(stateDir, 'gitlab-credential.py'), `${MARKER}\nimport sys,subprocess\nfields=dict(line.rstrip('\\n').split('=',1) for line in sys.stdin if '=' in line)\nif len(sys.argv)>1 and sys.argv[1]=='get' and fields.get('protocol')=='https' and fields.get('host')==${JSON.stringify(gitlab.host)}:\n result=subprocess.run([${JSON.stringify(gitlab.cli)},'config','get','token','--host',${JSON.stringify(gitlab.host)}],capture_output=True,text=True)\n if result.returncode==0 and result.stdout.strip():\n  print('username=oauth2');print('password='+result.stdout.strip());print()\n`, 0o600)
   }
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
+  if (feishuUser) await shim('lark-user-cli', `${withoutShims}\n${personalLark(feishuUser.cli, feishuUser.appId, feishuUser.openId)}`)
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
     await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
   }

@@ -41,3 +41,7 @@ Read the numbered documents in order; each builds only on the ones before it.
 ## GitLab support in this fork
 
 See [GitLab integration](docs/gitlab.md) for self-hosted GitLab setup and local-only reply previews.
+
+## Personal Feishu notifications
+
+See [personal Feishu notifications](docs/feishu-user-notifications.md) to reuse your existing user CLI for mentions and direct messages, with read-only intake and local reply drafts.

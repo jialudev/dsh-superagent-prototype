@@ -1,7 +1,7 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveGitlabDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, resolveDeployment, resolveGitlabDeployment, resolveFeishuBot, resolveFeishuUser, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -61,7 +61,8 @@ export class Setup {
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     if (block.startsWith('source:') && settings.sources[block.slice(7)]?.enabled === false) return
     const { machine } = this.host
-    const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
+    const check = block === 'source:feishu-user' ? resolveFeishuUser(machine, settings.sources['feishu-user']?.config, this.probe())
+      : block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
       : settings.sources.gitlab?.enabled ? resolveGitlabDeployment(machine, settings.sources.gitlab.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
@@ -87,7 +88,12 @@ export class Setup {
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
-    const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }
+    const feishuUser = settings.sources['feishu-user']?.enabled ? await resolveFeishuUser(machine, settings.sources['feishu-user'].config, probe).catch((error: unknown) => {
+      if (!(error instanceof SetupError)) throw error
+      context.logger.warn('dsh-superagent leaves personal Feishu notifications out: %s', error.message)
+      return undefined
+    }) : undefined
+    const resolved = { ...deployment, ...(feishu ? { feishu } : {}), ...(feishuUser ? { feishuUser } : {}) }
     const machineProblem = (error: unknown): never => {
       if (error instanceof SetupError) throw error
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })

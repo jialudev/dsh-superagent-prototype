@@ -19,6 +19,8 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 }
 
 export const KV = {
+  /** Personal Feishu notification cursors, namespaced by app, account and stream. */
+  feishuUser: { cursor: family<{ activated: string; since: string }, [stream: string]>('feishu-user-cursor:') },
   /** GitLab Source cursors are isolated by host and immutable project ID. */
   gitlab: { cursor: family<string, [project: string]>('gitlab-cursor:') },
   /** Store: current database schema version. */

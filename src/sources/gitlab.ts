@@ -7,7 +7,7 @@ import { escapeRegExp, sameName } from '../infra/text.ts'
 import { CliError, type Commands } from '../infra/commands.ts'
 import { KV } from '../kv.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
-import type { ContextPart, SourceKind } from './kind.ts'
+import type { ContextPart, SourceKind, Localized } from './kind.ts'
 import { pause } from './poll.ts'
 
 export const GitlabConfigSchema = GitlabAccountsSchema.extend({
@@ -102,7 +102,7 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
   kind: 'gitlab', title: { zh: 'GitLab', en: 'GitLab' },
   description: { zh: '监听一个 GitLab 项目的 Issue、MR 与评论；默认只在本地预览回复。', en: 'Receives project issues, merge requests and notes; replies stay local by default.' },
   schema: GitlabConfigSchema, health: ['gitlab'],
-  facts: deployment => deployment?.gitlab ? { cli: { zh: `当前账号 @${deployment.gitlab.login}`, en: `Current account @${deployment.gitlab.login}` } } : {},
+  facts: (deployment): Record<string, Localized | string> => deployment?.gitlab ? { cli: { zh: `当前账号 @${deployment.gitlab.login}`, en: `Current account @${deployment.gitlab.login}` } } : {},
   fields: [
     { key: 'host', type: 'text', label: { zh: 'GitLab 地址', en: 'GitLab host' } },
     { key: 'repository', type: 'text', label: { zh: '监听的项目', en: 'Project path' } },
