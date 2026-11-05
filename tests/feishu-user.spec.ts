@@ -9,7 +9,7 @@ import { Commands, assertLarkUserRead } from '../src/infra/commands.ts'
 import { workerBin, writeEnvironment } from '../src/infra/environment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
-import { FeishuUserConfigSchema, FeishuUserMessageSchema, feishuUserKind, feishuUserTrigger, pollFeishuUser } from '../src/sources/feishu-user.ts'
+import { FeishuUserConfigSchema, FeishuUserMessageSchema, feishuUserKind, feishuUserTrigger, pollFeishuUser, feishuSearchTime } from '../src/sources/feishu-user.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 import type { Trigger } from '../src/core/index.ts'
 import { testDeployment, testMachine } from './fixtures/deployment.ts'
@@ -121,6 +121,9 @@ it('initializes both cursors at activation, then reads scoped new messages and p
   await pollFeishuUser(h.ctx)
   expect(h.received).toHaveLength(2)
   expect(read.mock.calls[0]?.[0]).toContain('--is-at-me')
+  const args = read.mock.calls[0]![0]
+  expect(args[args.indexOf('--start')+1]).toBe('2026-11-05T00:00:00Z')
+  expect(args[args.indexOf('--end')+1]).toBe('2026-11-05T00:01:10Z')
   expect(read.mock.calls[1]?.[0]).toContain('next')
   expect(h.received[0]?.meta.senderName).toBe('Colleague')
   expect([...h.state.values()]).toEqual([expect.objectContaining({ since: '2026-11-05T00:01:10.000Z' }), expect.anything()])
@@ -174,4 +177,10 @@ it('does not drop a new message when the CLI formats its creation time only to t
   vi.spyOn(h.commands, 'larkUser').mockImplementation(async args => ({ messages: args.includes('group') ? [{ ...message, create_time: localMinute }] : [], has_more: false }))
   await pollFeishuUser(h.ctx)
   expect(h.received).toHaveLength(1)
+})
+
+
+it('uses whole-second search timestamps accepted by the live Feishu endpoint', () => {
+  expect(feishuSearchTime('2026-11-05T00:00:10.123Z')).toBe('2026-11-05T00:00:10Z')
+  expect(feishuSearchTime('2026-11-05T08:00:10.999+08:00')).toBe('2026-11-05T00:00:10Z')
 })

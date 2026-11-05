@@ -27,6 +27,8 @@ export const FeishuUserMessageSchema = z.looseObject({
 type Message = z.infer<typeof FeishuUserMessageSchema>
 const PageSchema = z.looseObject({ messages: z.array(FeishuUserMessageSchema), has_more: z.boolean(), page_token: z.string().optional() })
 const streams = ['mentions', 'direct'] as const
+/** The search endpoint rejects fractional seconds even though its input is documented as ISO 8601. */
+export const feishuSearchTime = (value: string): string => new Date(value).toISOString().replace(/\.\d{3}Z$/, 'Z')
 /** Notifications addressed to the person carry context, never an implicit mandate to the Agent. */
 export function feishuUserTrigger(message: Message, user: FeishuUser): Trigger | undefined {
   if (message.deleted || message.sender.id === user.openId || message.msg_type === 'system') return undefined
@@ -95,7 +97,7 @@ export async function pollFeishuUser(ctx: SourceContext, signal?: AbortSignal): 
       // Search indexing may lag; replay the last two minutes and deduplicate by stable source-message ID.
       const since = new Date(Math.max(Date.parse(before.activated), Date.parse(before.since) - 120_000)).toISOString()
       const args = ['im', '+messages-search', '--chat-type', stream === 'direct' ? 'p2p' : 'group',
-        ...stream === 'mentions' ? ['--is-at-me'] : [], '--start', since, '--end', ended, '--page-size', '50', '--no-reactions']
+        ...stream === 'mentions' ? ['--is-at-me'] : [], '--start', feishuSearchTime(since), '--end', feishuSearchTime(ended), '--page-size', '50', '--no-reactions']
       let token: string | undefined
       const seen = new Set<string>()
       for (let page = 0; ; page++) {
